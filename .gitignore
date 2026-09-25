@@ -1,0 +1,7 @@
+.env
+.venv/
+.venv-backup*/
+.safenet/
+__pycache__/
+.pytest_cache/
+*.py[cod]

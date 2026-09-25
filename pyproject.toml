@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "safenet-ai"
+version = "1.0.0"
+description = "Multi-agent LangGraph cybersecurity assistant for non-technical users"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=0.2,<2",
+  "langchain-openai>=0.2,<2",
+  "pydantic>=2.7,<3",
+  "python-dotenv>=1.0,<2",
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["safenet*"]
+
+[tool.setuptools.package-data]
+safenet = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
