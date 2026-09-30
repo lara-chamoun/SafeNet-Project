@@ -13,26 +13,61 @@ def _snapshot(stage: str, **values: object) -> dict[str, object]:
 
 # OpenAI reads the current update together with the incident history kept by this thread.
 def situation_analyzer(state: CyberSafetyState) -> dict:
+    # ---------------------------------------------------------
+    # 1. Check that the OpenAI API key exists
+    # ---------------------------------------------------------
     if not os.getenv("OPENAI_API_KEY", "").strip():
-        raise RuntimeError("OPENAI_API_KEY is required for SafeNet live analysis.")
+        raise RuntimeError(
+            "OPENAI_API_KEY is required for SafeNet live analysis."
+        )
 
-    history = [*state.conversation_history, state.user_message]
-    incident_context = "\n\n".join(history)
+    # ---------------------------------------------------------
+    # 2. Separate previous conversation from current message
+    # ---------------------------------------------------------
+    previous_history = list(state.conversation_history)
 
+    current_message = state.user_message.strip()
+
+    # Previous messages only.
+    # We do NOT add the current message here.
+    incident_context = "\n\n".join(previous_history)
+
+    # Complete history including the current message.
+    history = [*previous_history, state.user_message]
+
+    # ---------------------------------------------------------
+    # 3. Create the LLM
+    # ---------------------------------------------------------
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-    llm = ChatOpenAI(model=model, temperature=0)
-    structured_llm = llm.with_structured_output(SituationAnalysis)
 
-    analysis = structured_llm.invoke(
-        """
+    llm = ChatOpenAI(
+        model=model,
+        temperature=0,
+    )
+
+    # Structured Output Mode
+    structured_llm = llm.with_structured_output(
+        SituationAnalysis
+    )
+
+    # ---------------------------------------------------------
+    # 4. Build the prompt
+    # ---------------------------------------------------------
+    prompt = f"""
 You are SafeNet, a cybersecurity incident assessment assistant.
 
-SafeNet is specifically designed to help users with cybersecurity and
-digital-safety situations.
+SafeNet is specifically designed to help users with cybersecurity
+and digital-safety situations.
 
-Determine whether the user's current message is related to this scope.
+Your task is to analyze the CURRENT USER MESSAGE and determine
+whether it is related to cybersecurity.
+
+============================================================
+SCOPE
+============================================================
 
 IN-SCOPE examples:
+
 - suspicious emails, messages, links, or websites
 - phishing or scams
 - passwords or credentials being exposed
@@ -47,66 +82,230 @@ IN-SCOPE examples:
 - privacy or security incidents
 
 OUT-OF-SCOPE examples:
-- greetings such as "hello"
+
+- greetings such as "hello", "hi", or "good morning"
 - weather
 - general homework unrelated to cybersecurity
 - entertainment
 - general programming questions unrelated to cybersecurity
-- cooking, travel, shopping, etc.
+- cooking
+- travel
+- shopping
+- other unrelated everyday questions
 
-For out-of-scope messages:
+============================================================
+IMPORTANT SCOPE CLASSIFICATION RULE
+============================================================
+
+You MUST primarily classify the CURRENT USER MESSAGE.
+
+Previous conversation context may be used ONLY to understand
+a current message that clearly refers to the previous cybersecurity
+incident.
+
+Do NOT automatically inherit the cybersecurity classification
+from previous messages.
+
+A standalone greeting or unrelated message remains OUT-OF-SCOPE,
+even if the previous conversation was about cybersecurity.
+
+Examples:
+
+Example 1:
+
+Previous context:
+"I clicked a suspicious link."
+
+Current user message:
+"Should I change my password?"
+
+Result:
+IN-SCOPE
+
+Reason:
+The current message clearly refers to the previous cybersecurity
+incident.
+
+------------------------------------------------------------
+
+Example 2:
+
+Previous context:
+"I clicked a suspicious link."
+
+Current user message:
+"hello"
+
+Result:
+OUT-OF-SCOPE
+
+Reason:
+The current message is only a greeting and does not refer to
+the cybersecurity incident.
+
+------------------------------------------------------------
+
+Example 3:
+
+Previous context:
+"I clicked a suspicious link."
+
+Current user message:
+"I also entered my OTP."
+
+Result:
+IN-SCOPE
+
+Reason:
+The current message clearly provides new information about
+the cybersecurity incident.
+
+------------------------------------------------------------
+
+Example 4:
+
+Previous context:
+"I clicked a suspicious link."
+
+Current user message:
+"What is the weather today?"
+
+Result:
+OUT-OF-SCOPE
+
+Reason:
+The current message is unrelated to cybersecurity.
+
+============================================================
+OUT-OF-SCOPE BEHAVIOR
+============================================================
+
+For an OUT-OF-SCOPE message:
+
 - Set is_security_related to false.
 - Do not invent a cybersecurity incident.
 - Do not assign cybersecurity risk based on an unrelated message.
-- Keep the remaining incident fields empty/false where appropriate.
+- Do not inherit risk from previous messages.
+- Keep situation_type empty when appropriate.
+- Keep suspicious_elements empty when appropriate.
+- Keep incident indicators false unless the current message
+  clearly provides them.
 
-For in-scope messages:
+============================================================
+IN-SCOPE BEHAVIOR
+============================================================
+
+For an IN-SCOPE message:
+
 - Set is_security_related to true.
-- Analyze the actual incident.
-- Use the complete conversation history.
-- This is an ongoing incident, NOT automatically a new case.
+- Analyze the actual current message.
+- Use previous conversation context when it helps understand
+  the current message.
+- Treat the conversation as an ongoing incident when the current
+  message clearly continues or updates that incident.
 - New information can increase OR decrease risk.
 - Do not invent facts.
 - Do not treat previous statements as new events.
+- Only mark an event as occurring now if it is supported by
+  the current message or clearly established previous context.
 
-Incident history and newest update:
+============================================================
+PREVIOUS CONVERSATION CONTEXT
+============================================================
+
+{incident_context if incident_context else "(No previous conversation.)"}
+
+============================================================
+CURRENT USER MESSAGE
+============================================================
+
+{current_message}
+
+============================================================
+FINAL INSTRUCTION
+============================================================
+
+Determine the structured SituationAnalysis for the CURRENT USER
+MESSAGE while using previous context only when necessary to
+interpret a clear follow-up to an existing incident.
 """
-        + incident_context
-    )
+
+    # ---------------------------------------------------------
+    # 5. Run Structured Output Mode
+    # ---------------------------------------------------------
+    analysis = structured_llm.invoke(prompt)
+
+    # ---------------------------------------------------------
+    # 6. Debug information
+    # ---------------------------------------------------------
     print("========== SAFENET DEBUG ==========")
-    print("USER MESSAGE:", state.user_message)
-    print("SECURITY RELATED:", analysis.is_security_related)
-    print("SITUATION TYPE:", analysis.situation_type)
-    print("ANALYSIS:", analysis)
+    print("PREVIOUS HISTORY:")
+    print(previous_history)
+
+    print("CURRENT USER MESSAGE:")
+    print(state.user_message)
+
+    print("SECURITY RELATED:")
+    print(analysis.is_security_related)
+
+    print("SITUATION TYPE:")
+    print(analysis.situation_type)
+
+    print("ANALYSIS:")
+    print(analysis)
+
     print("===================================")
+
+    # ---------------------------------------------------------
+    # 7. Create snapshot
+    # ---------------------------------------------------------
     snap = _snapshot(
         "analyzed",
         type=analysis.situation_type,
         indicators=analysis.suspicious_elements,
     )
 
+    # ---------------------------------------------------------
+    # 8. Return updated LangGraph state
+    # ---------------------------------------------------------
     return {
+        # Complete conversation including current message
         "conversation_history": history,
+
+        # Previous context only
         "incident_context": incident_context,
+
+        # Structured analysis
         "analysis": analysis.model_dump(),
+
+        # Scope classification
         "is_security_related": analysis.is_security_related,
+
+        # Situation information
         "situation_type": analysis.situation_type,
         "suspicious_elements": analysis.suspicious_elements,
+
+        # Security indicators
         "contains_link": analysis.contains_link,
         "clicked_link": analysis.clicked_link,
         "shared_password": analysis.shared_password,
         "shared_otp": analysis.shared_otp,
         "downloaded_file": analysis.downloaded_file,
         "unknown_login": analysis.unknown_login,
+
+        # Execution metadata
         "current_stage": "analyzed",
+
         "agents_completed": [
             *state.agents_completed,
             "situation_analyzer",
         ],
+
         "snapshots": [
             *state.snapshots,
             snap,
         ],
+
         "iteration": state.iteration + 1,
     }
 def scope_response(state: CyberSafetyState) -> dict:
